@@ -79,6 +79,7 @@ class SSD(nn.Module):
         # apply vgg up to fc7
         for k in range(23, len(self.vgg)):
             x = self.vgg[k](x)
+        # x = torch.cat(x, pcd_feature)
         sources.append(x)
 
         # apply extra layers and cache source layer outputs
@@ -86,6 +87,11 @@ class SSD(nn.Module):
             x = F.relu(v(x), inplace=True)
             if k % 2 == 1:
                 sources.append(x)
+
+        # print('length of sources is: ', sources.__len__())
+        # for source in sources:
+        #     print(source.data.shape)
+        # # exit()
 
         # apply multibox head to source layers
         for (x, l, c) in zip(sources, self.loc, self.conf):
