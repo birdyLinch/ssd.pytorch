@@ -1,5 +1,3 @@
-#!usr/bin/python
-# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -57,7 +55,7 @@ class MultiBoxLoss(nn.Module):
             ground_truth (tensor): Ground truth boxes and labels for a batch,
                 shape: [batch_size,num_objs,5] (last idx is the label).
         """
-        loc_data, conf_data, size_data, ori_data, priors = predictions###########
+        loc_data, conf_data, priors = predictions
         num = loc_data.size(0)
         priors = priors[:loc_data.size(1), :]
         num_priors = (priors.size(0))
@@ -66,57 +64,28 @@ class MultiBoxLoss(nn.Module):
         # match priors (default boxes) and ground truth boxes
         loc_t = torch.Tensor(num, num_priors, 4)
         conf_t = torch.LongTensor(num, num_priors)
-        size_t = torch.Tensor(num, num_priors, 6)##############
-        ori_t = torch.Tensor(num, num_priors, 2)#################
         for idx in range(num):
-            truths = targets[idx][:, :4].data
+            truths = targets[idx][:, :-1].data
             labels = targets[idx][:, -1].data
-            labels_size = targets[idx][:, 8:14].data######################
-            labels_ori = targets[idx][:, 14:16].data######################
             defaults = priors.data
-            match(self.threshold, truths, defaults, self.variance, labels, labels_size,labels_ori,
-                  loc_t, conf_t, size_t, ori_t ,idx)###########################3
+            match(self.threshold, truths, defaults, self.variance, labels,
+                  loc_t, conf_t, idx)
         if self.use_gpu:
             loc_t = loc_t.cuda()
             conf_t = conf_t.cuda()
-            size_t = size_t.cuda()############################
-            ori_t = ori_t.cuda()###########################
         # wrap targets
         loc_t = Variable(loc_t, requires_grad=False)
         conf_t = Variable(conf_t, requires_grad=False)
-        size_t = Variable(size_t, requires_grad=False)############################
-        ori_t = Variable(ori_t, requires_grad=False)##############################
 
-        pos = conf_t >0  
+        pos = conf_t > 0
         num_pos = pos.sum(keepdim=True)
 
         # Localization Loss (Smooth L1)
         # Shape: [batch,num_priors,4]
-        
-       
-
-        pos_idx2 = pos.unsqueeze(pos.dim()).expand_as(size_data)
-        size_p = size_data[pos_idx2].view(-1, 6)###################
-        size_t = size_t[pos_idx2].view(-1, 6)######################
-        loss_l2 = F.smooth_l1_loss(size_p, size_t, size_average=False)###################
-
-
-        pos = conf_t >0  
-        pos_idx3 = pos.unsqueeze(pos.dim()).expand_as(ori_data)
-        ori_p = ori_data[pos_idx3].view(-1, 2)########################
-        ori_t = ori_t[pos_idx3].view(-1, 2)##########################
-        loss_l3 = F.smooth_l1_loss(ori_p, ori_t, size_average=False)  #####################
-
-        pos = conf_t >0  
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
         loc_p = loc_data[pos_idx].view(-1, 4)
         loc_t = loc_t[pos_idx].view(-1, 4)
-        loss_l1 = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
-
-        loss_l = loss_l1 + loss_l2 + loss_l3   ##############################
-
-        loss_l=loss_l1
-
+        loss_l = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
 
         # Compute max conf across batch for hard negative mining
         batch_conf = conf_data.view(-1, self.num_classes)
@@ -135,9 +104,6 @@ class MultiBoxLoss(nn.Module):
         # Confidence Loss Including Positive and Negative Examples
         pos_idx = pos.unsqueeze(2).expand_as(conf_data)
         neg_idx = neg.unsqueeze(2).expand_as(conf_data)
-        
-        # print((pos_idx+neg_idx).gt(0).data.shape)
-        # print(conf_data.data.shape)
         conf_p = conf_data[(pos_idx+neg_idx).gt(0)].view(-1, self.num_classes)
         targets_weighted = conf_t[(pos+neg).gt(0)]
         loss_c = F.cross_entropy(conf_p, targets_weighted, size_average=False)
