@@ -110,6 +110,15 @@ class Resize(object):
                                  self.size))
         return image, boxes, labels
 
+class KittiResize(object):#############################
+    def __init__(self, size1=384,size2=1280):#############
+        self.size1 = size1#######################
+        self.size2 = size2#######################
+
+    def __call__(self, image, boxes=None, labels=None):#########
+        image = cv2.resize(image, (self.size2,###############
+                                 self.size1))#####################
+        return image, boxes, labels####################
 
 class RandomSaturation(object):
     def __init__(self, lower=0.5, upper=1.5):
@@ -405,11 +414,11 @@ class SSDAugmentation(object):
             ConvertFromInts(),
             ToAbsoluteCoords(),
             PhotometricDistort(),
-            Expand(self.mean),
-            RandomSampleCrop(),
-            RandomMirror(),
+            # Expand(self.mean),
+            # RandomSampleCrop(),
+            # RandomMirror(),
             ToPercentCoords(),
-            Resize(self.size),
+            KittiResize(384, 1280),
             SubtractMeans(self.mean)
         ])
 

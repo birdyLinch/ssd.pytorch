@@ -66,7 +66,7 @@ def jaccard(box_a, box_b):
     return inter / union  # [A,B]
 
 
-def match(threshold, truths, priors, variances, labels, loc_t, conf_t, idx):
+def match(threshold, truths, priors, variances, labels, labels_s, labels_o, loc_t, conf_t, size_t, ori_t, idx):
     """Match each prior box with the ground truth box of the highest jaccard
     overlap, encode the bounding boxes, then return the matched indices
     corresponding to both confidence and location preds.

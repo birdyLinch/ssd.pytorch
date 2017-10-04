@@ -11,9 +11,7 @@ import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
-from PIL import Image
 import numpy as np
-import matplotlib.pyplot as plt
 import pdb
 import torch.nn.functional as F
 
@@ -29,17 +27,22 @@ class PointNetfeat(nn.Module):
         self.bn3 = nn.BatchNorm1d(256)
         self.mp1 = torch.nn.MaxPool1d(k_nn)
         self.k_nn = k_nn
-    def forward(self, pointset, indice):
-    	# x is (B, n_points, 4)
-    	# indice is (B, supix_y, supix_x, k_nn)
-    	supix_y, supix_x, _ = indice.shape
-    	x = pointset[indice]
-    	x = Variable(torch.from_numpy(x).cuda().view(-1, self.k_nn, 6).transpose(2, 1))
+    def forward(self, pointset, indice, cuda):
+        # NOTE: this forward function of class PointNetfeat takes (list of) numpy array as input
+        # x is (B, n_points, 4)
+        # indice is (B, supix_y, supix_x, k_nn)
+        supix_y, supix_x, _ = indice.shape
+        x = pointset[indice]
+
+        if cuda:
+            x = Variable(torch.from_numpy(x).cuda().view(-1, self.k_nn, 6).transpose(2, 1))
+        else:
+            x = Variable(torch.from_numpy(x).view(-1, self.k_nn, 6).transpose(2, 1))
 
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))
        	pointfeat = self.mp1(x)
        	pointfeat = pointfeat.view(supix_y, supix_x, 256)
-       	print('point feature shape is: ', pointfeat.data.shape)
+       	# print('point feature shape is: ', pointfeat.data.shape)
        	return pointfeat

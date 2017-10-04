@@ -7,12 +7,15 @@ import torch.nn.init as init
 import argparse
 from torch.autograd import Variable
 import torch.utils.data as data
-from data import v2, v1, AnnotationTransform, VOCDetection, detection_collate, VOCroot, VOC_CLASSES
+from data import v2, v1#, AnnotationTransform, KITTI, detection_collate, VOCroot, VOC_CLASSES
+from kitti_pcd_dataset import AnnotationTransform, KittiPcdDataset, collate_fn, KITTI_CLASSES
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
-from ssd import build_ssd
+# from ssd import build_ssd
+from pcd_ssd import build_ssd
 import numpy as np
 import time
+from point_feature import *
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -23,7 +26,7 @@ parser.add_argument('--basenet', default='vgg16_reducedfc.pth', help='pretrained
 parser.add_argument('--jaccard_threshold', default=0.5, type=float, help='Min Jaccard index for matching')
 parser.add_argument('--batch_size', default=16, type=int, help='Batch size for training')
 parser.add_argument('--resume', default=None, type=str, help='Resume from checkpoint')
-parser.add_argument('--num_workers', default=1, type=int, help='Number of workers used in dataloading')
+parser.add_argument('--num_workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--iterations', default=120000, type=int, help='Number of training iterations')
 parser.add_argument('--start_iter', default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
 parser.add_argument('--cuda', default=True, type=str2bool, help='Use cuda to train model')
@@ -35,25 +38,31 @@ parser.add_argument('--log_iters', default=True, type=bool, help='Print the loss
 parser.add_argument('--visdom', default=False, type=str2bool, help='Use visdom to for loss visualization')
 parser.add_argument('--send_images_to_visdom', type=str2bool, default=True, help='Sample a random image from each 10th batch, send it to visdom after augmentations step')
 parser.add_argument('--save_folder', default='weights/', help='Location to save checkpoint models')
-parser.add_argument('--voc_root', default=VOCroot, help='Location of VOC root directory')
+parser.add_argument('--kitti_root', default='/data-sdb/chen01.lin/ssd/KITTIdevkit/KITTI', help='Location of VOC root directory')
 args = parser.parse_args()
 
 if args.cuda and torch.cuda.is_available():
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # disable cuda ascroness
+    # os.environ["CUDA_LAUNCH_BLOCKING"]="1"
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
+
+# random seed setting
+args.manualSeed = np.random.randint(1, 10000) # fix seed
+print("Random Seed: ", args.manualSeed)
+np.random.seed(args.manualSeed)
+torch.manual_seed(args.manualSeed)
 
 cfg = (v1, v2)[args.version == 'v2']
 
 if not os.path.exists(args.save_folder):
     os.mkdir(args.save_folder)
 
-# train_sets = [('2007', 'trainval'), ('2012', 'trainval')]
-train_sets = [('2012', 'trainval')]
-# train_sets = 'train'
+train_sets = ['train']
 ssd_dim = 300  # only support 300 now
 means = (104, 117, 123)  # only support voc now
-num_classes = len(VOC_CLASSES) + 1
+num_classes = len(KITTI_CLASSES) + 1 # TODO: CHECK CLASSIFICATION CLASSESS
 batch_size = args.batch_size
 accum_batch_size = 32
 iter_size = accum_batch_size / batch_size
@@ -74,6 +83,7 @@ if args.cuda:
     net = torch.nn.DataParallel(ssd_net)
     cudnn.benchmark = True
 
+# TODP: INITIALIZE THE ADDITIONAL PCD FEATURE CONV LAYER
 if args.resume:
     print('Resuming training, loading {}...'.format(args.resume))
     ssd_net.load_weights(args.resume)
@@ -103,10 +113,27 @@ if not args.resume:
     ssd_net.loc.apply(weights_init)
     ssd_net.conf.apply(weights_init)
 
-optimizer = optim.SGD(net.parameters(), lr=args.lr,
+# point_feature module and init
+feat_extr = PointNetfeat(k_nn = 5)
+pcd_process = torch.nn.Sequential(
+                    torch.nn.Conv2d(256, 512, 3, stride=2, padding=1), 
+                    # torch.nn.MaxPool2d(kernel_size=2, stride=2)
+                )
+if args.resume:
+    feat_extr.load_state_dict(torch.load('weight/'))
+else:
+    feat_extr.apply(weights_init)
+    pcd_process.apply(weights_init)
+if args.cuda:
+    feat_extr = feat_extr.cuda()
+print("model setings done")
+
+# # point_feature optimizer
+# optimizer = optim.SGD(feat_extr.parameters(), lr=1., momentum=0.9)
+all_parameters = list(list(net.parameters()) + list(feat_extr.parameters()) + list(pcd_process.parameters()))
+optimizer = optim.SGD(all_parameters, lr=args.lr,
                       momentum=args.momentum, weight_decay=args.weight_decay)
 criterion = MultiBoxLoss(num_classes, 0.5, True, 0, True, 3, 0.5, False, args.cuda)
-
 
 def train():
     # set the module in train mode
@@ -117,7 +144,7 @@ def train():
     epoch = 0
     print('Loading Dataset...')
 
-    dataset = VOCDetection(args.voc_root, train_sets, SSDAugmentation(
+    dataset = KittiPcdDataset(args.kitti_root, train_sets, SSDAugmentation(
         ssd_dim, means), AnnotationTransform())
 
     epoch_size = len(dataset) // args.batch_size
@@ -147,7 +174,7 @@ def train():
         )
     batch_iterator = None
     data_loader = data.DataLoader(dataset, batch_size, num_workers=args.num_workers,
-                                  shuffle=True, collate_fn=detection_collate, pin_memory=True)
+                                  shuffle=False, collate_fn=collate_fn, pin_memory=True)
     for iteration in range(args.start_iter, max_iter):
         if (not batch_iterator) or (iteration % epoch_size == 0):
             # create batch iterator
@@ -169,7 +196,16 @@ def train():
             epoch += 1
 
         # load train data
-        images, targets = next(batch_iterator)
+        pointclouds, indices , images, targets = next(batch_iterator)
+
+        pointfeats = []
+        for i in range(args.batch_size):
+            pointcloud = pointclouds[i]
+            indice = indices[i]
+            pointfeat = feat_extr(pointcloud, indice, args.cuda)
+            pointfeats.append(pointfeat)
+        pointfeats = torch.stack(pointfeats)
+        pointfeats = pointfeats.permute(0, 3, 1, 2)
 
         if args.cuda:
             images = Variable(images.cuda())
@@ -179,7 +215,7 @@ def train():
             targets = [Variable(anno, volatile=True) for anno in targets]
         # forward
         t0 = time.time()
-        out = net(images)
+        out = net(images, pointfeats, pcd_process)
 
         # backprop
         optimizer.zero_grad()
@@ -215,9 +251,14 @@ def train():
                 )
         if iteration % 5000 == 0:
             print('Saving state, iter:', iteration)
-            torch.save(ssd_net.state_dict(), 'weights/ssd300_0712_' +
+            torch.save(ssd_net.state_dict(), 'weights/pcdssd_ssdnet_' +
                        repr(iteration) + '.pth')
-    torch.save(ssd_net.state_dict(), args.save_folder + '' + args.version + '.pth')
+            torch.save(feat_extr.state_dict(), 'weights/pcdssd_featextr_' +
+                       repr(iteration) + '.pth')
+            torch.save(pcd_process.state_dict(), 'weights/pcdssd_pcdproclayer_' +
+                        repr(iteration) + '.pth')
+
+    # torch.save(ssd_net.state_dict(), args.save_folder + '' + args.version + '.pth')
 
 
 def adjust_learning_rate(optimizer, gamma, step):
