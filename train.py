@@ -24,7 +24,7 @@ parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Trai
 parser.add_argument('--version', default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
 parser.add_argument('--basenet', default='vgg16_reducedfc.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold', default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size', default=16, type=int, help='Batch size for training')
+parser.add_argument('--batch_size', default=4, type=int, help='Batch size for training')
 parser.add_argument('--resume', default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--iterations', default=120000, type=int, help='Number of training iterations')
@@ -44,7 +44,7 @@ args = parser.parse_args()
 if args.cuda and torch.cuda.is_available():
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
     # disable cuda ascroness
-    # os.environ["CUDA_LAUNCH_BLOCKING"]="1"
+    os.environ["CUDA_LAUNCH_BLOCKING"]="1"
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
@@ -220,11 +220,15 @@ def train():
         # backprop
         optimizer.zero_grad()
         loss_l, loss_c = criterion(out, targets)
-        loss = loss_l + loss_c
+        if loss_l is None:
+            loss = loss_c
+        else:
+            loss = loss_l + loss_c
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        loc_loss += loss_l.data[0]
+        if loss_l is not None:
+            loc_loss += loss_l.data[0]
         conf_loss += loss_c.data[0]
         if iteration % 10 == 0:
             print('Timer: %.4f sec.' % (t1 - t0))

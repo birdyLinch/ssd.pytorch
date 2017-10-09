@@ -23,6 +23,9 @@ else:
 
 KITTI_CLASSES = ('dontcare' ,'pedestrian', 'person_sitting', 'cyclist', 'car', 'van', 'truck','tram', 'misc')
 
+# Note Van is not counted as a negetive classes and dontcare objects will be removed in loss
+KITTI_CLASSES = ('dontcare', 'car')
+
 # for making bounding boxes pretty
 COLORS = ((255, 0, 0, 128), (0, 255, 0, 128), (0, 0, 255, 128),
           (0, 255, 255, 128), (255, 0, 255, 128), (255, 255, 0, 128))
@@ -61,6 +64,11 @@ class AnnotationTransform(object):
             #     continue
             difficult = 0
             name = obj.find('name').text.lower().strip()
+            
+            # filter the negetive classes
+            if name not in KITTI_CLASSES:
+                continue
+
             bbox = obj.find('bndbox')
 
             pts = ['xmin', 'ymin', 'xmax', 'ymax','x','y','z','h','w','l','alpha','ry']
@@ -178,7 +186,11 @@ class KittiPcdDataset(data.Dataset):
             target = self.target_transform(target, width, height)
 
         if self.transform is not None:
+            # if len(target) > 0:
             target = np.array(target)
+            if target.shape[0] == 0: 
+                target = np.array([[0.,]*13])
+            # print(target, target.shape)
             img, boxes, labels = self.transform(img, target[:, :4], target[:, :13])
             
             # to rgb           
