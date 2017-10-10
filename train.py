@@ -79,9 +79,9 @@ if args.visdom:
 ssd_net = build_ssd('train', 300, num_classes)
 net = ssd_net
 
-if args.cuda:
-    net = torch.nn.DataParallel(ssd_net)
-    cudnn.benchmark = True
+# if args.cuda:
+    # net = torch.nn.DataParallel(ssd_net)
+    # cudnn.benchmark = True
 
 # TODP: INITIALIZE THE ADDITIONAL PCD FEATURE CONV LAYER
 if args.resume:
@@ -173,12 +173,17 @@ def train():
             )
         )
     batch_iterator = None
+
+    print('initiating data loader...')
     data_loader = data.DataLoader(dataset, batch_size, num_workers=args.num_workers,
                                   shuffle=False, collate_fn=collate_fn, pin_memory=True)
+    print('initiating done...')
     for iteration in range(args.start_iter, max_iter):
         if (not batch_iterator) or (iteration % epoch_size == 0):
             # create batch iterator
+            # print('creating batch iterator')
             batch_iterator = iter(data_loader)
+            # print('creating done...')
         if iteration in stepvalues:
             step_index += 1
             adjust_learning_rate(optimizer, args.gamma, step_index)
@@ -196,8 +201,10 @@ def train():
             epoch += 1
 
         # load train data
+        # print('loading train data')
         pointclouds, indices , images, targets = next(batch_iterator)
 
+        # print('extracting porintclouds')
         pointfeats = []
         for i in range(args.batch_size):
             pointcloud = pointclouds[i]
@@ -206,17 +213,22 @@ def train():
             pointfeats.append(pointfeat)
         pointfeats = torch.stack(pointfeats)
         pointfeats = pointfeats.permute(0, 3, 1, 2)
+        # print('pointfeature extracted')
 
+        # print('making variables')
         if args.cuda:
             images = Variable(images.cuda())
             targets = [Variable(anno.cuda(), volatile=True) for anno in targets]
         else:
             images = Variable(images)
             targets = [Variable(anno, volatile=True) for anno in targets]
+        # print('make variables done')
+
+        # print('forwarding')
         # forward
         t0 = time.time()
         out = net(images, pointfeats, pcd_process)
-
+        # print('forwarding done')
         # backprop
         optimizer.zero_grad()
         loss_l, loss_c = criterion(out, targets)

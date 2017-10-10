@@ -67,6 +67,7 @@ class SSD(nn.Module):
                     2: localization layers, Shape: [batch,num_priors*4]
                     3: priorbox layers, Shape: [2,num_priors*4]
         """
+        # print('inside forwarding')
         sources = list()
         loc = list()
         conf = list()
