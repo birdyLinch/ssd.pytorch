@@ -79,7 +79,7 @@ def match(threshold, truths, priors, variances, labels, labels_s, labels_o, loc_
         labels: (tensor) All the class labels for the image, Shape: [num_obj].
         loc_t: (tensor) Tensor to be filled w/ endcoded location targets.
         conf_t: (tensor) Tensor to be filled w/ matched indices for conf preds.
-        idx: (int) current batch index
+        idx: (int) current batch indexs
     Return:
         The matched indices corresponding to 1)location and 2)confidence preds.
     """
@@ -108,6 +108,8 @@ def match(threshold, truths, priors, variances, labels, labels_s, labels_o, loc_
     loc = encode(matches, priors, variances)
     loc_t[idx] = loc    # [num_priors,4] encoded offsets to learn
     conf_t[idx] = conf  # [num_priors] top class label for each prior
+    size_t[idx] = labels_s[best_truth_idx]
+    ori_t[idx] = labels_o[best_truth_idx]
 
 
 def encode(matched, priors, variances):

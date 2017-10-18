@@ -1,3 +1,8 @@
+
+
+
+
+
 import os
 import torch
 import torch.nn as nn
@@ -48,6 +53,8 @@ if args.cuda and torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
+bigger_then_100 = list()
+
 # random seed setting
 args.manualSeed = np.random.randint(1, 10000) # fix seed
 print("Random Seed: ", args.manualSeed)
@@ -72,9 +79,11 @@ stepvalues = (80000, 100000, 120000)
 gamma = 0.1
 momentum = 0.9
 
+print('Start visdom...')
 if args.visdom:
     import visdom
     viz = visdom.Visdom()
+print('Visdom started')
 
 ssd_net = build_ssd('train', 300, num_classes)
 net = ssd_net
@@ -202,7 +211,7 @@ def train():
 
         # load train data
         # print('loading train data')
-        pointclouds, indices , images, targets = next(batch_iterator)
+        pointclouds, indices , images, targets, fns = next(batch_iterator)
 
         # print('extracting porintclouds')
         pointfeats = []
@@ -231,11 +240,20 @@ def train():
         # print('forwarding done')
         # backprop
         optimizer.zero_grad()
-        loss_l, loss_c = criterion(out, targets)
+        loss_l, loss_c, N, diff = criterion(out, targets)
         if loss_l is None:
             loss = loss_c
         else:
+            pixloss = loss_l[0]
+            oriloss = loss_l[1]
+            sizetranslationloss = loss_l[2]
+            loss_l = (loss_l[0] + loss_l[1] + loss_l[2])/N
             loss = loss_l + loss_c
+        if loss.data[0] > 100:
+            bigger_then_100.append(iteration)
+            print(bigger_then_100)
+            print(fns)
+            print(diff.data)
         loss.backward()
         optimizer.step()
         t1 = time.time()
@@ -249,22 +267,43 @@ def train():
                 random_batch_index = np.random.randint(images.size(0))
                 viz.image(images.data[random_batch_index].cpu().numpy())
         if args.visdom:
+            if loss_l is not None:
+                Y_tensor = torch.Tensor([loss_l.data[0], loss_c.data[0],
+                    loss_l.data[0] + loss_c.data[0]]).unsqueeze(0).cpu()
+                inside_loss_l = torch.Tensor([pixloss.data[0]/N, oriloss.data[0]/N,
+                    sizetranslationloss.data[0]/N]).unsqueeze(0).cpu()
+            
+            # viz.line(
+            #     X=torch.ones((1, 3)).cpu() * iteration,
+            #     Y=Y_tensor,
+            #     win=lot,
+            #     update='append'
+            # )
+
             viz.line(
                 X=torch.ones((1, 3)).cpu() * iteration,
-                Y=torch.Tensor([loss_l.data[0], loss_c.data[0],
-                    loss_l.data[0] + loss_c.data[0]]).unsqueeze(0).cpu(),
+                Y=inside_loss_l,
                 win=lot,
                 update='append'
             )
+            
             # hacky fencepost solution for 0th epoch plot
             if iteration == 0:
+                # viz.line(
+                #     X=torch.zeros((1, 3)).cpu(),
+                #     Y=torch.Tensor([loc_loss, conf_loss,
+                #         loc_loss + conf_loss]).unsqueeze(0).cpu(),
+                #     win=epoch_lot,
+                #     update=True
+                # )
                 viz.line(
                     X=torch.zeros((1, 3)).cpu(),
-                    Y=torch.Tensor([loc_loss, conf_loss,
-                        loc_loss + conf_loss]).unsqueeze(0).cpu(),
+                    Y=torch.Tensor([loc_loss, loc_loss,
+                    loc_loss]).unsqueeze(0).cpu(),
                     win=epoch_lot,
                     update=True
                 )
+        
         if iteration % 5000 == 0:
             print('Saving state, iter:', iteration)
             torch.save(ssd_net.state_dict(), 'weights/pcdssd_ssdnet_' +

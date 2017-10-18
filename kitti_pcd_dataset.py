@@ -21,6 +21,24 @@ if sys.version_info[0] == 2:
 else:
     import xml.etree.ElementTree as ET
 
+
+def base_transform(image, size_x, size_y, mean):
+    x = cv2.resize(image, (size_x, size_y)).astype(np.float32)
+    # x = cv2.resize(np.array(image), (size, size)).astype(np.float32)
+    #x -= mean
+    x = x.astype(np.float32)
+    return x
+
+
+class BaseTransform:
+    def __init__(self, size_x, size_y, mean):
+        self.size_x = size_x
+        self.size_y = size_y
+        self.mean = np.array(mean, dtype=np.float32)
+
+    def __call__(self, image, boxes=None, labels=None):
+        return base_transform(image, self.size_x, self.size_y, self.mean), boxes, labels
+
 KITTI_CLASSES = ('dontcare' ,'pedestrian', 'person_sitting', 'cyclist', 'car', 'van', 'truck','tram', 'misc')
 
 # Note Van is not counted as a negetive classes and dontcare objects will be removed in loss
@@ -121,13 +139,14 @@ class KittiPcdDataset(data.Dataset):
 
 
     def __getitem__(self, index):
+
         '''
         produce a single data, label pair in numpy array format
         '''
-        point_set, indice = self.get_pcd_and_indice(index)
+        point_set, indice, fn = self.get_pcd_and_indice(index)
         im, gt, h, w = self.pull_item(index)
         
-        return point_set, indice, im, gt
+        return point_set, indice, im, gt, fn
 
     def __len__(self):
         return len(self.ids)
@@ -143,13 +162,14 @@ class KittiPcdDataset(data.Dataset):
         indice : [48, 168, k_nn]
         '''
         fn = self._pcdpath % self.ids[index]
+
         '''
         This np.loadtxt() function is bloody hell useful
         '''
         point_set = np.loadtxt(fn).astype(np.float32)
         indice = self.supix_selection(point_set, k_nn=5)
         
-        return point_set, indice
+        return point_set, indice, fn
 
     def supix_selection(self, point_set, k_nn=5, scale=1.0):
         # use kd tree for nearest neighbor search
@@ -180,6 +200,8 @@ class KittiPcdDataset(data.Dataset):
 
         target = ET.parse(self._annopath % img_id).getroot()
         img = cv2.imread(self._imgpath % img_id)
+        # cv2.imshow('img', img)
+        # cv2.waitKey(0)
         height, width, channels = img.shape
 
         if self.target_transform is not None:
@@ -192,9 +214,11 @@ class KittiPcdDataset(data.Dataset):
                 target = np.array([[0.,]*13])
             # print(target, target.shape)
             img, boxes, labels = self.transform(img, target[:, :4], target[:, :13])
-            
+            # cv2.imshow('img', img.astype(np.uint8))
+            # cv2.waitKey(0)
             # to rgb           
             img = img[:, :, (2, 1, 0)]
+
             # img = img.transpose(2, 0, 1)
             target = np.hstack((boxes, labels))
         return torch.from_numpy(img).permute(2, 0, 1), target, height, width        # return torch.from_numpy(img), target, height, width
@@ -248,13 +272,15 @@ def collate_fn(batch):
     imgs = []
     data_batch = []
     indice_batch = []
+    fn_batch = []
     for sample in batch:
-        data, indice, im, gt = sample
+        data, indice, im, gt, fn = sample
         data_batch.append(data)
         indice_batch.append(indice)
         imgs.append(im)
         targets.append(torch.FloatTensor(gt))
-    return data_batch, indice_batch, torch.stack(imgs, 0), targets 
+        fn_batch.append(fn)
+    return data_batch, indice_batch, torch.stack(imgs, 0), targets, fn_batch 
 
 def detection_collate(batch):
     """Custom collate fn for dealing with batches of images that have a different

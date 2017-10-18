@@ -10,12 +10,12 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torchvision.transforms as transforms
 from torch.autograd import Variable
-from data import VOCroot
-from data import VOC_CLASSES as labelmap
+KITTIroot = '/data-sdb/chen01.lin/ssd/KITTIdevkit'
+from kitti_pcd_dataset import KITTI_CLASSES as labelmap
 import torch.utils.data as data
 
-from data import AnnotationTransform, VOCDetection, BaseTransform, VOC_CLASSES
-from ssd import build_ssd
+from kitti_pcd_dataset import AnnotationTransform, KittiPcdDataset, KITTI_CLASSES, BaseTransform
+from pcd_ssd import build_ssd
 
 import sys
 import os
@@ -24,6 +24,7 @@ import argparse
 import numpy as np
 import pickle
 import cv2
+from point_feature import *
 
 if sys.version_info[0] == 2:
     import xml.etree.cElementTree as ET
@@ -34,7 +35,7 @@ def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
 
 parser = argparse.ArgumentParser(description='Single Shot MultiBox Detection')
-parser.add_argument('--trained_model', default='weights/ssd300_mAP_77.43_v2.pth',
+parser.add_argument('--trained_model_ssd', default='weights/pcdssd_ssdnet_100000.pth',
                     type=str, help='Trained state_dict file path to open')
 parser.add_argument('--save_folder', default='eval/', type=str,
                     help='File path to save results')
@@ -44,7 +45,9 @@ parser.add_argument('--top_k', default=5, type=int,
                     help='Further restrict the number of predictions to parse')
 parser.add_argument('--cuda', default=True, type=str2bool,
                     help='Use cuda to train model')
-parser.add_argument('--voc_root', default='/home/chenlin/data/VOCdevkit', help='Location of VOC root directory')
+parser.add_argument('--kitti_root', default='/data-sdb/chen01.lin/ssd/KITTIdevkit', help='Location of VOC root directory')
+parser.add_argument('--trained_model_featextr', default='weights/pcdssd_featextr_100000.pth')
+parser.add_argument('--trained_model_pcd_process', default='weights/pcdssd_pcdproclayer_100000.pth')
 
 args = parser.parse_args()
 
@@ -56,13 +59,13 @@ if args.cuda and torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
-annopath = os.path.join(args.voc_root, 'VOC2007', 'Annotations', '%s.xml')
-imgpath = os.path.join(args.voc_root, 'VOC2007', 'JPEGImages', '%s.jpg')
-imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets', 'Main', '{:s}.txt')
-YEAR = '2007'
-devkit_path = VOCroot + 'VOC' + YEAR
+annopath = os.path.join(args.kitti_root, 'KITTI', 'Annotations', '%s.xml')
+imgpath = os.path.join(args.kitti_root, 'KITTI', 'JPEGImages', '%s.png')
+imgsetpath = os.path.join(args.kitti_root, 'KITTI', 'ImageSets', 'Main', '{:s}.txt')
+
+devkit_path = args.kitti_root
 dataset_mean = (104, 117, 123)
-set_type = 'test'
+set_type = 'val'
 
 class Timer(object):
     """A simple timer."""
@@ -95,6 +98,8 @@ def parse_rec(filename):
     objects = []
     for obj in tree.findall('object'):
         obj_struct = {}
+        print(obj)
+        print(obj_struct)
         obj_struct['name'] = obj.find('name').text
         obj_struct['pose'] = obj.find('pose').text
         obj_struct['truncated'] = int(obj.find('truncated').text)
@@ -152,7 +157,7 @@ def do_python_eval(output_dir='output', use_07=True):
     cachedir = os.path.join(devkit_path, 'annotations_cache')
     aps = []
     # The PASCAL VOC metric changed in 2010
-    use_07_metric = use_07
+    use_07_metric = False
     print('VOC07 metric? ' + ('Yes' if use_07_metric else 'No'))
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
@@ -351,7 +356,7 @@ cachedir: Directory for caching the annotations
 
 def test_net(save_folder, net, cuda, dataset, transform, top_k,
              im_size=300, thresh=0.05):
-    """Test a Fast R-CNN network on an image database."""
+    # """Test a Fast R-CNN network on an image database."""
     num_images = len(dataset)
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
@@ -365,13 +370,31 @@ def test_net(save_folder, net, cuda, dataset, transform, top_k,
     det_file = os.path.join(output_dir, 'detections.pkl')
 
     for i in range(num_images):
+        pcd, indice, im, gt, fns = dataset[i]
         im, gt, h, w = dataset.pull_item(i)
 
         x = Variable(im.unsqueeze(0))
         if args.cuda:
             x = x.cuda()
         _t['im_detect'].tic()
-        detections = net(x).data
+        
+        pointfeats = []
+        pointfeat = feat_extr(pcd, indice, args.cuda)
+        pointfeats.append(pointfeat)
+        pointfeats = torch.stack(pointfeats)
+        pointfeats = pointfeats.permute(0, 3, 1, 2)
+        
+        detections = net(x, pointfeats, pcd_process).data
+        
+        print(gt)
+        print(detections.shape)
+        img = (im.numpy()).astype(np.uint8)
+        img = np.stack([img[2], img[1], img[0]])
+        img = np.transpose(img, (1, 2, 0))
+        print(img.shape)
+        cv2.imshow('img', img)
+        cv2.waitKey(0)
+        exit()
         detect_time = _t['im_detect'].toc(average=False)
 
         # skip j = 0, because it's the background class
@@ -393,9 +416,12 @@ def test_net(save_folder, net, cuda, dataset, transform, top_k,
 
         print('im_detect: {:d}/{:d} {:.3f}s'.format(i + 1,
                                                     num_images, detect_time))
+    exit()
 
-    with open(det_file, 'wb') as f:
-        pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
+    # with open(det_file, 'wb') as f:
+    #     pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
+
+    all_boxes = pickle.load(open(det_file, 'rb'))
 
     print('Evaluating detections')
     evaluate_detections(all_boxes, output_dir, dataset)
@@ -408,17 +434,26 @@ def evaluate_detections(box_list, output_dir, dataset):
 
 if __name__ == '__main__':
     # load net
-    num_classes = len(VOC_CLASSES) + 1 # +1 background
+    num_classes = len(KITTI_CLASSES) + 1 # +1 background
     net = build_ssd('test', 300, num_classes) # initialize SSD
-    net.load_state_dict(torch.load(args.trained_model))
+    net.load_state_dict(torch.load(args.trained_model_ssd))
+    feat_extr = PointNetfeat(k_nn=5)
+    feat_extr.load_state_dict(torch.load(args.trained_model_featextr))
+    pcd_process = torch.nn.Sequential(
+                    torch.nn.Conv2d(256, 512, 3, stride=2, padding=1), 
+                    # torch.nn.MaxPool2d(kernel_size=2, stride=2)
+                )
+    pcd_process.load_state_dict(torch.load(args.trained_model_pcd_process))
     net.eval()
     print('Finished loading model!')
     # load data
-    dataset = VOCDetection(args.voc_root, [('2007', set_type)], BaseTransform(384, 1280, dataset_mean), AnnotationTransform())
+    dataset = KittiPcdDataset(args.kitti_root+'/KITTI', ['val'], BaseTransform(1280, 384, dataset_mean), AnnotationTransform())
     if args.cuda:
         net = net.cuda()
+        feat_extr = feat_extr.cuda()
+        pcd_process = pcd_process.cuda()
         cudnn.benchmark = True
     # evaluation
     test_net(args.save_folder, net, args.cuda, dataset,
-             BaseTransform(384, 1280, dataset_mean), args.top_k, 300,
+             BaseTransform(1280, 384, dataset_mean), args.top_k, 300,
              thresh=args.confidence_threshold)

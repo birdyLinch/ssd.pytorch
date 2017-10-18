@@ -99,26 +99,31 @@ class MultiBoxLoss(nn.Module):
         # loc_t = loc_t[pos_idx].view(-1, 4)
         # loss_l1 = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
         pos_idx2 = pos.unsqueeze(pos.dim()).expand_as(size_data)
+        # print(pos_idx2.data.shape)
+        # print(size_data.data.shape)
+        out_size_p = size_data*pos_idx2.type(torch.cuda.FloatTensor)
         size_p = size_data[pos_idx2].view(-1, 6)###################
+        out_size_t = size_t*pos_idx2.type(torch.cuda.FloatTensor)
+        # print(out_size_p.data.shape)
         size_t = size_t[pos_idx2].view(-1, 6)######################
-        loss_l2 = F.smooth_l1_loss(size_p, size_t, size_average=False)###################
-
+        loss_loc_size = F.smooth_l1_loss(size_p, size_t, size_average=False)###################
+        diff = torch.sum(torch.sum(torch.abs(out_size_p - out_size_t), 2), 1)
 
         pos = conf_t > 1 
         pos_idx3 = pos.unsqueeze(pos.dim()).expand_as(ori_data)
         ori_p = ori_data[pos_idx3].view(-1
         , 2)########################
         ori_t = ori_t[pos_idx3].view(-1, 2)##########################
-        loss_l3 = F.smooth_l1_loss(ori_p, ori_t, size_average=False)  #####################
+        loss_ori = F.smooth_l1_loss(ori_p, ori_t, size_average=False)  #####################
 
         pos = conf_t > 1 
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
         loc_p = loc_data[pos_idx].view(-1, 4)
         loc_t = loc_t[pos_idx].view(-1, 4)
-        loss_l1 = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
+        loss_pixloc = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
 
-        loss_l = loss_l1 + loss_l2 + loss_l3   ##############################
-
+        # loss_l = loss_l1 + loss_l2 + loss_l3   ##############################
+        loss_l = (loss_pixloc, loss_ori, loss_loc_size)
         # Compute max conf across batch for hard negative mining
         batch_conf = conf_data.view(-1, self.num_classes)
 
@@ -153,7 +158,9 @@ class MultiBoxLoss(nn.Module):
         # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
 
         N = num_pos.data.sum()
-        if loss_l is not None:
-            loss_l /= N
+        # if loss_l is not None:
+        #     loss_l /= N
         loss_c /= N
-        return loss_l, loss_c
+        return loss_l, loss_c, N, diff
+
+

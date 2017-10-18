@@ -80,7 +80,7 @@ class SSD(nn.Module):
         # print(s.data.shape)
 
         # PCD: feature fusion
-        # print(pcd_feature.data.shape)
+        
         s = torch.cat([s, pcd_feature], dim=1)
         # x = torch.cat([s, pcd_feature], dim=3)
         sources.append(s)
@@ -111,13 +111,13 @@ class SSD(nn.Module):
         loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
         conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
         siz = torch.cat([o.view(o.size(0), -1) for o in siz], 1)##################
-        ori = torch.cat([o.view(o.size(0), -1) for o in ori], 1)###################
+        ori = torch.cat([o.view(o.size(0), -1) for o in ori], 1)#
+        ##################
+        print(loc.data.shape)
         if self.phase == "test":
             output = self.detect(
                 loc.view(loc.size(0), -1, 4),                   # loc preds
                 self.softmax(conf.view(-1, self.num_classes)),  # conf preds
-                siz.view(siz.size(0), -1, 6),                   # x,y,z,w,h,l preds###########
-                ori.view(ori.size(0), -1, 2),                   # ori preds
                 self.priors.type(type(x.data))                  # default boxes
             )
         else:
