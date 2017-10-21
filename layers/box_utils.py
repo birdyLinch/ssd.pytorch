@@ -66,7 +66,7 @@ def jaccard(box_a, box_b):
     return inter / union  # [A,B]
 
 
-def match(threshold, truths, priors, variances, labels, labels_s, labels_o, loc_t, conf_t, size_t, ori_t, idx):
+def match(threshold, priors, variances, labels, loc_truths, size_tr_truths, ori_truths, conf_t, loc_t, size_tr_t, ori_t, idx):
     """Match each prior box with the ground truth box of the highest jaccard
     overlap, encode the bounding boxes, then return the matched indices
     corresponding to both confidence and location preds.
@@ -85,9 +85,10 @@ def match(threshold, truths, priors, variances, labels, labels_s, labels_o, loc_
     """
     # jaccard index
     overlaps = jaccard(
-        truths,
+        loc_truths,
         point_form(priors)
-    )
+    ) # !!!!! overlaps has shape of [num_obj_of_img x num_priors] 
+    
     # (Bipartite Matching)
     # [1,num_objects] best prior for each ground truth
     best_prior_overlap, best_prior_idx = overlaps.max(1, keepdim=True)
@@ -102,14 +103,14 @@ def match(threshold, truths, priors, variances, labels, labels_s, labels_o, loc_
     # ensure every gt matches with its prior of max overlap
     for j in range(best_prior_idx.size(0)):
         best_truth_idx[best_prior_idx[j]] = j
-    matches = truths[best_truth_idx]          # Shape: [num_priors,4]
+    matches = loc_truths[best_truth_idx]          # Shape: [num_priors,4]
     conf = labels[best_truth_idx] + 1         # Shape: [num_priors]
     conf[best_truth_overlap < threshold] = 0  # label as background
     loc = encode(matches, priors, variances)
     loc_t[idx] = loc    # [num_priors,4] encoded offsets to learn
     conf_t[idx] = conf  # [num_priors] top class label for each prior
-    size_t[idx] = labels_s[best_truth_idx]
-    ori_t[idx] = labels_o[best_truth_idx]
+    size_tr_t[idx] = size_tr_truths[best_truth_idx]
+    ori_t[idx] = ori_truths[best_truth_idx]
 
 
 def encode(matched, priors, variances):

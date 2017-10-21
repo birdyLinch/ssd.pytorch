@@ -113,7 +113,7 @@ class SSD(nn.Module):
         siz = torch.cat([o.view(o.size(0), -1) for o in siz], 1)##################
         ori = torch.cat([o.view(o.size(0), -1) for o in ori], 1)#
         ##################
-        print(loc.data.shape)
+        # print(loc.data.shape)
         if self.phase == "test":
             output = self.detect(
                 loc.view(loc.size(0), -1, 4),                   # loc preds

@@ -1,8 +1,3 @@
-
-
-
-
-
 import os
 import torch
 import torch.nn as nn
@@ -16,11 +11,11 @@ from data import v2, v1#, AnnotationTransform, KITTI, detection_collate, VOCroot
 from kitti_pcd_dataset import AnnotationTransform, KittiPcdDataset, collate_fn, KITTI_CLASSES
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
-# from ssd import build_ssd
 from pcd_ssd import build_ssd
 import numpy as np
 import time
 from point_feature import *
+import cv2
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -29,9 +24,9 @@ parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Trai
 parser.add_argument('--version', default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
 parser.add_argument('--basenet', default='vgg16_reducedfc.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold', default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size', default=4, type=int, help='Batch size for training')
-parser.add_argument('--resume', default=None, type=str, help='Resume from checkpoint')
-parser.add_argument('--num_workers', default=4, type=int, help='Number of workers used in dataloading')
+parser.add_argument('--batch_size', default=1, type=int, help='Batch size for training')
+parser.add_argument('--resume', default=None, type=str, help='Resume from checkpoint folder')
+parser.add_argument('--num_workers', default=1, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--iterations', default=120000, type=int, help='Number of training iterations')
 parser.add_argument('--start_iter', default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
 parser.add_argument('--cuda', default=True, type=str2bool, help='Use cuda to train model')
@@ -40,9 +35,9 @@ parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
 parser.add_argument('--weight_decay', default=5e-4, type=float, help='Weight decay for SGD')
 parser.add_argument('--gamma', default=0.1, type=float, help='Gamma update for SGD')
 parser.add_argument('--log_iters', default=True, type=bool, help='Print the loss at each iteration')
-parser.add_argument('--visdom', default=False, type=str2bool, help='Use visdom to for loss visualization')
-parser.add_argument('--send_images_to_visdom', type=str2bool, default=True, help='Sample a random image from each 10th batch, send it to visdom after augmentations step')
-parser.add_argument('--save_folder', default='weights/', help='Location to save checkpoint models')
+parser.add_argument('--visdom', default=True, type=str2bool, help='Use visdom to for loss visualization')
+parser.add_argument('--send_images_to_visdom', default=False, type=str2bool, help='Sample a random image from each 10th batch, send it to visdom after augmentations step')
+parser.add_argument('--save_folder', default=None, help='Location to save checkpoint models')
 parser.add_argument('--kitti_root', default='/data-sdb/chen01.lin/ssd/KITTIdevkit/KITTI', help='Location of VOC root directory')
 args = parser.parse_args()
 
@@ -53,7 +48,9 @@ if args.cuda and torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
-bigger_then_100 = list()
+if args.save_folder is None:
+    print('Please Specify Save Folder')
+    exit()
 
 # random seed setting
 args.manualSeed = np.random.randint(1, 10000) # fix seed
@@ -69,7 +66,7 @@ if not os.path.exists(args.save_folder):
 train_sets = ['train']
 ssd_dim = 300  # only support 300 now
 means = (104, 117, 123)  # only support voc now
-num_classes = len(KITTI_CLASSES) + 1 # TODO: CHECK CLASSIFICATION CLASSESS
+num_classes = len(KITTI_CLASSES) +1 -1 # add Background class, subtract Dontcare classes 
 batch_size = args.batch_size
 accum_batch_size = 32
 iter_size = accum_batch_size / batch_size
@@ -85,26 +82,11 @@ if args.visdom:
     viz = visdom.Visdom()
 print('Visdom started')
 
-ssd_net = build_ssd('train', 300, num_classes)
-net = ssd_net
-
-# if args.cuda:
-    # net = torch.nn.DataParallel(ssd_net)
-    # cudnn.benchmark = True
-
-# TODP: INITIALIZE THE ADDITIONAL PCD FEATURE CONV LAYER
-if args.resume:
-    print('Resuming training, loading {}...'.format(args.resume))
-    ssd_net.load_weights(args.resume)
-else:
-    vgg_weights = torch.load(args.save_folder + args.basenet)
-    print('Loading base network...')
-    ssd_net.vgg.load_state_dict(vgg_weights)
-
-if args.cuda:
-    net = net.cuda()
-
-
+#########################
+#
+#   Model Setup
+#
+#########################
 def xavier(param):
     init.xavier_uniform(param)
 
@@ -114,39 +96,57 @@ def weights_init(m):
         xavier(m.weight.data)
         m.bias.data.zero_()
 
-
-if not args.resume:
-    print('Initializing weights...')
-    # initialize newly added layers' weights with xavier method
-    ssd_net.extras.apply(weights_init)
-    ssd_net.loc.apply(weights_init)
-    ssd_net.conf.apply(weights_init)
-
-# point_feature module and init
+ssd_net = build_ssd('train', 300, num_classes)
+net = ssd_net
 feat_extr = PointNetfeat(k_nn = 5)
 pcd_process = torch.nn.Sequential(
                     torch.nn.Conv2d(256, 512, 3, stride=2, padding=1), 
                     # torch.nn.MaxPool2d(kernel_size=2, stride=2)
                 )
+
+# initializeing
 if args.resume:
-    feat_extr.load_state_dict(torch.load('weight/'))
+    print('Resuming training, loading {}...'.format(args.resume))
+    ssd_net.load_weights(args.resume)
+    feat_extr.load_state_dict(torch.load('weights/pcdssd_featextr_100000.pth'))
+    pcd_process.load_state_dict(torch.load('weights/pcdssd_pcdproclayer_100000.pth'))
 else:
+    vgg_weights = torch.load(os.path.join('weights', args.basenet))
+    
+    print('Loading base network...')
+    ssd_net.vgg.load_state_dict(vgg_weights)
+    
+    print('Initializing weights...')
     feat_extr.apply(weights_init)
     pcd_process.apply(weights_init)
+    ssd_net.extras.apply(weights_init)
+    ssd_net.loc.apply(weights_init)
+    ssd_net.conf.apply(weights_init)
+
 if args.cuda:
+    net = net.cuda()
     feat_extr = feat_extr.cuda()
 print("model setings done")
 
-# # point_feature optimizer
-# optimizer = optim.SGD(feat_extr.parameters(), lr=1., momentum=0.9)
+#########################
+#
+#   Optimization
+#
+#########################
 all_parameters = list(list(net.parameters()) + list(feat_extr.parameters()) + list(pcd_process.parameters()))
 optimizer = optim.SGD(all_parameters, lr=args.lr,
                       momentum=args.momentum, weight_decay=args.weight_decay)
 criterion = MultiBoxLoss(num_classes, 0.5, True, 0, True, 3, 0.5, False, args.cuda)
 
+#########################
+#
+#   Train Loop
+#
+#########################
 def train():
-    # set the module in train mode
+    # set the module in train mode for bn and dropout
     net.train()
+
     # loss counters
     loc_loss = 0  # epoch
     conf_loss = 0
@@ -163,57 +163,48 @@ def train():
         # initialize visdom loss plot
         lot = viz.line(
             X=torch.zeros((1,)).cpu(),
-            Y=torch.zeros((1, 3)).cpu(),
+            Y=torch.zeros((1, 4)).cpu(),
             opts=dict(
                 xlabel='Iteration',
                 ylabel='Loss',
                 title='Current SSD Training Loss',
-                legend=['Loc Loss', 'Conf Loss', 'Loss']
+                legend=['Pixel Loss', 'Ori Loss', 'Size and Loc Loss', 'Conf Loss']
             )
         )
-        epoch_lot = viz.line(
-            X=torch.zeros((1,)).cpu(),
-            Y=torch.zeros((1, 3)).cpu(),
-            opts=dict(
-                xlabel='Epoch',
-                ylabel='Loss',
-                title='Epoch SSD Training Loss',
-                legend=['Loc Loss', 'Conf Loss', 'Loss']
-            )
-        )
+
     batch_iterator = None
 
     print('initiating data loader...')
-    data_loader = data.DataLoader(dataset, batch_size, num_workers=args.num_workers,
-                                  shuffle=False, collate_fn=collate_fn, pin_memory=True)
+    data_loader = data.DataLoader(dataset, batch_size, num_workers=args.num_workers, shuffle=True, collate_fn=collate_fn, pin_memory=True)
+    
     print('initiating done...')
     for iteration in range(args.start_iter, max_iter):
+
+        # Use batch iterator for data reading
         if (not batch_iterator) or (iteration % epoch_size == 0):
-            # create batch iterator
-            # print('creating batch iterator')
             batch_iterator = iter(data_loader)
-            # print('creating done...')
+        # Adjust learning rate
         if iteration in stepvalues:
             step_index += 1
             adjust_learning_rate(optimizer, args.gamma, step_index)
-            if args.visdom:
-                viz.line(
-                    X=torch.ones((1, 3)).cpu() * epoch,
-                    Y=torch.Tensor([loc_loss, conf_loss,
-                        loc_loss + conf_loss]).unsqueeze(0).cpu() / epoch_size,
-                    win=epoch_lot,
-                    update='append'
-                )
-            # reset epoch loss counters
-            loc_loss = 0
-            conf_loss = 0
-            epoch += 1
-
-        # load train data
-        # print('loading train data')
+        
+        #############
+        # load data #
+        #############
         pointclouds, indices , images, targets, fns = next(batch_iterator)
+        if args.cuda:
+            images = Variable(images.cuda())
+            targets = [Variable(anno.cuda(), volatile=True) for anno in targets]
+        else:
+            images = Variable(images)
+            targets = [Variable(anno, volatile=True) for anno in targets]
+        
+        #############
+        # Fowarding #
+        #############
+        t0 = time.time()
 
-        # print('extracting porintclouds')
+        # point cloud features
         pointfeats = []
         for i in range(args.batch_size):
             pointcloud = pointclouds[i]
@@ -222,99 +213,61 @@ def train():
             pointfeats.append(pointfeat)
         pointfeats = torch.stack(pointfeats)
         pointfeats = pointfeats.permute(0, 3, 1, 2)
-        # print('pointfeature extracted')
 
-        # print('making variables')
-        if args.cuda:
-            images = Variable(images.cuda())
-            targets = [Variable(anno.cuda(), volatile=True) for anno in targets]
-        else:
-            images = Variable(images)
-            targets = [Variable(anno, volatile=True) for anno in targets]
-        # print('make variables done')
-
-        # print('forwarding')
-        # forward
-        t0 = time.time()
+        # pcdsdd net
         out = net(images, pointfeats, pcd_process)
-        # print('forwarding done')
-        # backprop
+
+        ################
+        # Optimization #
+        ################
         optimizer.zero_grad()
         loss_l, loss_c, N, diff = criterion(out, targets)
+
+        # handle none object batch
         if loss_l is None:
-            loss = loss_c
+            loss = 2.*loss_c
         else:
             pixloss = loss_l[0]
             oriloss = loss_l[1]
             sizetranslationloss = loss_l[2]
-            loss_l = (loss_l[0] + loss_l[1] + loss_l[2])/N
-            loss = loss_l + loss_c
-        if loss.data[0] > 100:
-            bigger_then_100.append(iteration)
-            print(bigger_then_100)
-            print(fns)
-            print(diff.data)
+            loss_l = (1.*loss_l[0] + 1.*loss_l[1] + 0.25*loss_l[2])/N
+            loss = loss_l + 2.*loss_c
+
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        if loss_l is not None:
-            loc_loss += loss_l.data[0]
-        conf_loss += loss_c.data[0]
+        
+        ##########################
+        # Draw Plot & Print Loss #
+        ##########################
         if iteration % 10 == 0:
             print('Timer: %.4f sec.' % (t1 - t0))
             print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.data[0]), end=' ')
+            if loss_l is not None:
+                print('pix loss: %.2f, ori loss: %.2f, size_translation loss: %.2f, conf loss: %.2f'%(pixloss.data[0]/N, oriloss.data[0]/N,
+                    sizetranslationloss.data[0]/N, loss_c.data[0]))
             if args.visdom and args.send_images_to_visdom:
                 random_batch_index = np.random.randint(images.size(0))
                 viz.image(images.data[random_batch_index].cpu().numpy())
         if args.visdom:
             if loss_l is not None:
-                Y_tensor = torch.Tensor([loss_l.data[0], loss_c.data[0],
-                    loss_l.data[0] + loss_c.data[0]]).unsqueeze(0).cpu()
-                inside_loss_l = torch.Tensor([pixloss.data[0]/N, oriloss.data[0]/N,
-                    sizetranslationloss.data[0]/N]).unsqueeze(0).cpu()
-            
-            # viz.line(
-            #     X=torch.ones((1, 3)).cpu() * iteration,
-            #     Y=Y_tensor,
-            #     win=lot,
-            #     update='append'
-            # )
-
+                inside_loss_l = torch.Tensor([1.*pixloss.data[0]/N, 1.*oriloss.data[0]/N,
+                    0.25*sizetranslationloss.data[0]/N, 2.*loss_c.data[0]]).unsqueeze(0).cpu()
             viz.line(
-                X=torch.ones((1, 3)).cpu() * iteration,
+                X=torch.ones((1, 4)).cpu() * iteration,
                 Y=inside_loss_l,
                 win=lot,
                 update='append'
             )
-            
-            # hacky fencepost solution for 0th epoch plot
-            if iteration == 0:
-                # viz.line(
-                #     X=torch.zeros((1, 3)).cpu(),
-                #     Y=torch.Tensor([loc_loss, conf_loss,
-                #         loc_loss + conf_loss]).unsqueeze(0).cpu(),
-                #     win=epoch_lot,
-                #     update=True
-                # )
-                viz.line(
-                    X=torch.zeros((1, 3)).cpu(),
-                    Y=torch.Tensor([loc_loss, loc_loss,
-                    loc_loss]).unsqueeze(0).cpu(),
-                    win=epoch_lot,
-                    update=True
-                )
-        
+
+        ##############
+        # Save Model #
+        ##############
         if iteration % 5000 == 0:
             print('Saving state, iter:', iteration)
-            torch.save(ssd_net.state_dict(), 'weights/pcdssd_ssdnet_' +
-                       repr(iteration) + '.pth')
-            torch.save(feat_extr.state_dict(), 'weights/pcdssd_featextr_' +
-                       repr(iteration) + '.pth')
-            torch.save(pcd_process.state_dict(), 'weights/pcdssd_pcdproclayer_' +
-                        repr(iteration) + '.pth')
-
-    # torch.save(ssd_net.state_dict(), args.save_folder + '' + args.version + '.pth')
-
+            torch.save(ssd_net.state_dict(), args.save_folder + '/pcdssd_ssdnet_' + repr(iteration) + '.pth')
+            torch.save(feat_extr.state_dict(), args.save_folder + '/pcdssd_featextr_' + repr(iteration) + '.pth')
+            torch.save(pcd_process.state_dict(), args.save_folder + '/pcdssd_pcdproclayer_' + repr(iteration) + '.pth')
 
 def adjust_learning_rate(optimizer, gamma, step):
     """Sets the learning rate to the initial LR decayed by 10 at every specified step
@@ -325,6 +278,15 @@ def adjust_learning_rate(optimizer, gamma, step):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+def transform_img(img, idx_in_batch=None):
+    if idx_in_batch is not None:
+        return images.permute(1, 2, 0).numpy().astype(np.uint8)
+    else:
+        return images[idx_in_batch].permute(1, 2, 0).numpy().astype(np.uint8)
+
+def show_img(img):
+    cv2.imshow('img', img)
+    cv2.waitKey(0)
 
 if __name__ == '__main__':
     train()

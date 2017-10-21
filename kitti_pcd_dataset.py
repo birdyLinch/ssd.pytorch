@@ -25,7 +25,7 @@ else:
 def base_transform(image, size_x, size_y, mean):
     x = cv2.resize(image, (size_x, size_y)).astype(np.float32)
     # x = cv2.resize(np.array(image), (size, size)).astype(np.float32)
-    #x -= mean
+    x -= mean
     x = x.astype(np.float32)
     return x
 
@@ -39,7 +39,7 @@ class BaseTransform:
     def __call__(self, image, boxes=None, labels=None):
         return base_transform(image, self.size_x, self.size_y, self.mean), boxes, labels
 
-KITTI_CLASSES = ('dontcare' ,'pedestrian', 'person_sitting', 'cyclist', 'car', 'van', 'truck','tram', 'misc')
+# KITTI_CLASSES = ('dontcare' ,'pedestrian', 'person_sitting', 'cyclist', 'car', 'van', 'truck','tram', 'misc')
 
 # Note Van is not counted as a negetive classes and dontcare objects will be removed in loss
 KITTI_CLASSES = ('dontcare', 'car')
